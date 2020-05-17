@@ -68,6 +68,9 @@ class ESN(torch.nn.Module):
                         self.res_scale * self.W_res @ x[i-1, :]
                         ) / np.sqrt(self.res_size)
             else:
+                torch.manual_seed(self.seed + i)
+                W_in_redraw = self.scale_in*torch.randn((self.reservoir_size, self.input_size)).to(device)
+                W_res_redraw = self.scale_res*torch.randn((self.reservoir_size, self.reservoir_size)).to(device)
                 x[i,:] = \
                     (1 - self.leak_rate) * x[i-1, :] + \
                     self.leak_rate * self.f( 
@@ -77,7 +80,7 @@ class ESN(torch.nn.Module):
 
         return x
 
-    def train(self, X, y, method='cholesky', alpha=1e-2):
+    def train(self, X, y, method='cholesky', alpha=1e-3):
         if method == 'cholesky':
             # This technique uses the Cholesky decomposition
             # It should be fast when res_size < seq_len
