@@ -2,6 +2,8 @@ import numpy as np
 import torch
 from tqdm import tqdm
 
+from hadamard_cuda import hadamard_transform
+
 use_cuda = torch.cuda.is_available()
 device = torch.device("cuda" if use_cuda else "cpu")
 
@@ -16,9 +18,10 @@ class ESN(torch.nn.Module):
     """
 
     def __init__(self, input_size, res_size, 
+                 random_projection='gaussian', 
                  input_scale=1.0, res_scale=1.0, 
                  bias=0, leak_rate=1, f='erf', 
-                 redraw=False, redraw_batch=1, 
+                 redraw=False, 
                  seed=1):
         super(ESN, self).__init__()
 
@@ -29,13 +32,15 @@ class ESN(torch.nn.Module):
         self.bias = bias
         self.leak_rate = leak_rate
         self.redraw = redraw
-        self.redraw_batch = redraw_batch
+        self.random_projection = random_projection
         self.seed = seed
         
         #self.f = f
         if f == 'erf':
             self.f = torch.erf
         if f == 'cos_rbf':
+            torch.manual_seed(1)
+            self.bias = 2 * np.pi * torch.rand(self.res_size).to(device)
             self.f = lambda x : np.sqrt(2)*torch.cos(x + self.bias).to(device)
         if f == 'heaviside':
             self.f = lambda x: 1 * (x > 0)
@@ -43,8 +48,19 @@ class ESN(torch.nn.Module):
             self.f = torch.sign
                 
         torch.manual_seed(self.seed)
-        self.W_in = torch.randn(res_size, input_size).to(device)
-        self.W_res = torch.randn(res_size, res_size).to(device)
+        if self.random_projection == 'structured':
+            # We use the library from https://github.com/HazyResearch/structured-nets
+            self.had_dim = int(2**np.ceil(np.log2(self.input_size+self.res_size)))
+            pad_dim = self.had_dim - self.res_size - self.input_size
+            self.zero_pad = torch.zeros(pad_dim).to(device)  # to avoid generating a new vector at every iteration
+        if not self.redraw:
+            if self.random_projection == 'gaussian':
+                self.W_in = torch.randn(res_size, input_size).to(device)
+                self.W_res = torch.randn(res_size, res_size).to(device)
+            elif self.random_projection == 'structured':
+                self.diag1 = 2 * torch.randint(0, 2, (self.had_dim, )).to(device) - 1
+                self.diag2 = 2 * torch.randint(0, 2, (self.had_dim, )).to(device) - 1
+                self.diag3 = 2 * torch.randint(0, 2, (self.had_dim, )).to(device) - 1
         
     def forward(self, input_data, initial_state=None):
         """
@@ -61,22 +77,60 @@ class ESN(torch.nn.Module):
 
         for i in range(seq_len):
             if not self.redraw:
-                x[i,:] = \
-                    (1 - self.leak_rate) * x[i-1, :] + \
-                    self.leak_rate * self.f( 
-                        self.input_scale * self.W_in @ input_data[i, :] + 
-                        self.res_scale * self.W_res @ x[i-1, :]
-                        ) / np.sqrt(self.res_size)
+                if self.random_projection == 'gaussian':
+                    x[i,:] = \
+                        (1 - self.leak_rate) * x[i-1, :] + \
+                        self.leak_rate * self.f( 
+                            self.input_scale * self.W_in @ input_data[i, :] + 
+                            self.res_scale * self.W_res @ x[i-1, :]
+                            ) / np.sqrt(self.res_size)
+                elif self.random_projection == 'structured':
+                    u = torch.cat((
+                        self.input_scale * input_data[i, :], 
+                        self.res_scale * x[i-1, :], 
+                        self.zero_pad
+                        ))
+                    v1 = hadamard_transform(self.diag1 * u)
+                    v2 = hadamard_transform(self.diag2 * v1)
+                    v3 = hadamard_transform(self.diag3 * v2)
+                    v3 /= self.had_dim
+                    # v3 /= np.sqrt(self.had_dim**3) / np.sqrt(self.res_size+self.input_size)  # = np.sqrt(self.had_dim ** 3) / np.sqrt(self.had_dim)
+                    v3 = v3[:self.res_size]
+                    x[i,:] = \
+                        (1 - self.leak_rate) * x[i-1, :] + \
+                        self.leak_rate * self.f(v3) / np.sqrt(self.res_size)
             else:
                 torch.manual_seed(self.seed + i)
-                W_in_redraw = self.scale_in*torch.randn((self.reservoir_size, self.input_size)).to(device)
-                W_res_redraw = self.scale_res*torch.randn((self.reservoir_size, self.reservoir_size)).to(device)
-                x[i,:] = \
-                    (1 - self.leak_rate) * x[i-1, :] + \
-                    self.leak_rate * self.f( 
-                        self.input_scale * W_in_redraw @ input_data[i, :] + 
-                        self.res_scale * W_res_redraw @ x[i-1, :]
-                        ) / np.sqrt(self.res_size)
+                if self.random_projection == 'gaussian':
+                    W_in_redraw = self.scale_in*torch.randn((self.reservoir_size, self.input_size)).to(device)
+                    input_prod = W_in_redraw @ input_data[i, :]
+                    del W_in_redraw
+                    W_res_redraw = self.scale_res*torch.randn((self.reservoir_size, self.reservoir_size)).to(device)
+                    res_prod = W_res_redraw @ x[i-1, :]
+                    del W_res_redraw
+                    x[i,:] = \
+                        (1 - self.leak_rate) * x[i-1, :] + \
+                        self.leak_rate * self.f( 
+                            self.input_scale * input_prod + 
+                            self.res_scale * res_prod
+                            ) / np.sqrt(self.res_size)
+                elif self.random_projection == 'structured':
+                    self.diag1 = 2 * torch.randint(0, 2, (self.had_dim, )).to(device) - 1
+                    self.diag2 = 2 * torch.randint(0, 2, (self.had_dim, )).to(device) - 1
+                    self.diag3 = 2 * torch.randint(0, 2, (self.had_dim, )).to(device) - 1
+                    u = torch.cat((
+                        self.input_scale * input_data[i, :], 
+                        self.res_scale * x[i-1, :], 
+                        self.zero_pad
+                        ))
+                    v1 = hadamard_transform(self.diag1 * u)
+                    v2 = hadamard_transform(self.diag2 * v1)
+                    v3 = hadamard_transform(self.diag3 * v2)
+                    v3 /= self.had_dim  # = np.sqrt(self.had_dim ** 3) / np.sqrt(self.had_dim)
+                    v3 = v3[:self.res_size]
+                    x[i,:] = \
+                        (1 - self.leak_rate) * x[i-1, :] + \
+                        self.leak_rate * self.f(v3) / np.sqrt(self.res_size)
 
         return x
 
@@ -84,8 +138,8 @@ class ESN(torch.nn.Module):
         if method == 'cholesky':
             # This technique uses the Cholesky decomposition
             # It should be fast when res_size < seq_len
-            Xt_y = X.T @ y  # size (n_res, k)
-            K = X.T @ X  # size (n_res, n_res)
+            Xt_y = X.T @ y  # size (res_size, k)
+            K = X.T @ X  # size (res_size, res_size)
             K.view(-1)[::len(K)+1] += alpha  # add elements on the diagonal inplace
             L = torch.cholesky(K, upper=False)
             return torch.cholesky_solve(Xt_y, L, upper=False)
