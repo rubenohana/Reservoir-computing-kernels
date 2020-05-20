@@ -41,7 +41,7 @@ class ESN(torch.nn.Module):
         if f == 'cos_rbf':
             torch.manual_seed(1)
             self.bias = 2 * np.pi * torch.rand(self.res_size).to(device)
-            self.f = lambda x : np.sqrt(2)*torch.cos(x + self.bias).to(device)
+            self.f = lambda x : np.sqrt(2)*torch.cos(x + self.bias)
         if f == 'heaviside':
             self.f = lambda x: 1 * (x > 0)
         if f == 'sign':
@@ -102,10 +102,10 @@ class ESN(torch.nn.Module):
             else:
                 torch.manual_seed(self.seed + i)
                 if self.random_projection == 'gaussian':
-                    W_in_redraw = self.scale_in*torch.randn((self.reservoir_size, self.input_size)).to(device)
+                    W_in_redraw = self.input_scale * torch.randn((self.res_size, self.input_size)).to(device)
                     input_prod = W_in_redraw @ input_data[i, :]
                     del W_in_redraw
-                    W_res_redraw = self.scale_res*torch.randn((self.reservoir_size, self.reservoir_size)).to(device)
+                    W_res_redraw = self.res_scale * torch.randn((self.res_size, self.res_size)).to(device)
                     res_prod = W_res_redraw @ x[i-1, :]
                     del W_res_redraw
                     x[i,:] = \
