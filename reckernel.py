@@ -51,6 +51,16 @@ class RecKernel():
                 K = 2 / np.pi * torch.asin(
                     (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
             return K.to(device)  # TOCHECK: maybe to(device) is not necessary
+        if self.function == 'linear':
+            for t in range(n_iter):
+                if self.memory_efficient:
+                    current_input = input_data[t:t+input_len-n_iter, :]
+                else:
+                    current_input = input_data[:, t, :].reshape(n_input, input_dim)
+                input_gram = current_input @ current_input.T
+
+                K = self.res_scale**2 * K + self.input_scale**2 * input_gram
+            return K.to(device)  # TOCHECK: maybe to(device) is not necessary
         if self.function == 'arcsin leak':
             for t in range(n_iter):
                 if self.memory_efficient:
@@ -65,7 +75,7 @@ class RecKernel():
                     1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in)
                 renorm_factor = torch.sqrt(
                     renorm_diag.reshape(n_input, 1) @ renorm_diag.reshape(1, n_input))
-                K = (1 - self.leak_rate**2) * K + self.leak_rate**2 *  2 / np.pi * torch.asin(
+                K = (1 - self.leak_rate)**2 * K + self.leak_rate**2 *  2 / np.pi * torch.asin(
                     (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
             return K.to(device)  # TOCHECK: maybe to(device) is not necessary
         elif self.function == 'rbf':
@@ -115,7 +125,40 @@ class RecKernel():
 
     def forward_test(self, train_data, test_data):
         if self.memory_efficient:
-            pass
+            n_iter = self.n_iter
+            train_len, input_dim = train_data.shape
+            n_train = train_len - n_iter
+            test_len = test_data.shape[0]
+            n_test = test_len - n_iter
+
+            diag_res_train = torch.ones(n_train).to(device)
+            diag_res_test = torch.ones(n_test).to(device)
+            K = torch.ones(n_test, n_train).to(device)
+
+            for t in range(n_iter):
+                current_train = train_data[t:t+n_train, :]
+                current_test = test_data[t:t+n_test, :]
+                input_gram = current_test @ current_train.T
+
+                renorm_factor = 1 / torch.sqrt(
+                    (1 + 2*self.res_scale**2*diag_res_test+2*self.input_scale**2*torch.sum((current_test)**2, dim=1)).reshape(n_test, 1) @
+                    (1 + 2*self.res_scale**2*diag_res_train+2*self.input_scale**2*torch.sum(current_train**2, dim=1)).reshape(1, n_train)
+                    )
+                K = 2 / np.pi * torch.asin(
+                    (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
+
+                diag_res_train = 2 / np.pi * torch.asin(
+                    (2 * self.res_scale**2 * diag_res_train + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1)) /
+                    (1 + 2 * self.res_scale**2 * diag_res_train + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1))
+                    )
+                diag_res_test = 2 / np.pi * torch.asin(
+                    (2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1)) /
+                    (1 + 2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1))
+                    )
+            print(K.shape)
+
+            return K.to(device)
+
         else:
             input_data = torch.cat((train_data, test_data), dim=0)
             n_input, n_iter, input_dim = input_data.shape

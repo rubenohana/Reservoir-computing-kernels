@@ -134,7 +134,7 @@ class ESN(torch.nn.Module):
 
         return x
 
-    def train(self, X, y, method='cholesky', alpha=1e-3):
+    def train(self, X, y, method='cholesky', alpha=1e-2):
         if method == 'cholesky':
             # This technique uses the Cholesky decomposition
             # It should be fast when res_size < seq_len
