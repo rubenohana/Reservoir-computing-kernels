@@ -148,3 +148,39 @@ class ESN(torch.nn.Module):
             clf = Ridge(fit_intercept=False, alpha=alpha)
             clf.fit(X.cpu().numpy(), y.cpu().numpy())
             return torch.from_numpy(clf.coef_.T).to(device)
+
+    def rec_pred(self, X, output_w, n_rec, input_dim):
+        Xd = X  # input_len, n_res
+        input_len = X.shape[0]
+        out_len = output_w.shape[1]
+
+        total_pred = torch.zeros(input_len, out_len*(n_rec+1))
+        pred_data = Xd @ output_w
+        total_pred[:, :out_len] = pred_data
+        single_pred_length = out_len // input_dim
+        for i_rec in range(n_rec):
+            for t in range(single_pred_length):
+                pred_input = pred_data[:, t*input_dim:(t+1)*input_dim]  # input_len, input_dim
+                if self.random_projection == 'gaussian':
+                    Xd = (1 - self.leak_rate) * Xd + \
+                        self.leak_rate * self.f(
+                            self.res_scale * Xd @ self.W_res.T +
+                            self.input_scale * pred_input @ self.W_in.T
+                            ) / np.sqrt(self.res_size)
+                elif self.random_projection == 'structured':
+                    U = torch.cat((
+                        self.input_scale * pred_input, 
+                        self.res_scale * Xd, 
+                        torch.zeros(input_len, self.had_dim - self.res_size - self.input_size)
+                        ), dim=1)
+                    V1 = hadamard_transform(U * self.diag1)
+                    V2 = hadamard_transform(V1 * self.diag2)
+                    V3 = hadamard_transform(V2 * self.diag3)
+                    V3 /= self.had_dim
+                    V3 = V3[:, :self.res_size]
+                    Xd = (1 - self.leak_rate) * Xd + self.leak_rate * self.f(V3) / np.sqrt(self.res_size)
+            pred_data = Xd @ output_w
+            total_pred[:, (i_rec+1)*out_len:(i_rec+2)*out_len] = pred_data
+        return total_pred
+
+
