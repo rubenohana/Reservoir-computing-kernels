@@ -21,11 +21,11 @@ class RecKernel():
         self.memory_efficient = memory_efficient
         self.n_iter = n_iter
         
-    def forward(self, input_data, initial_K=None):
-        if self.memory_efficient:
+    def forward(self, input_data, initial_K=None, bypass=None):
+        if self.memory_efficient and bypass is None:
             input_len, input_dim = input_data.shape
             n_iter = self.n_iter
-            n_input = input_len - n_iter
+            n_input = input_len - n_iter + 1
         else:
             n_input, n_iter, input_dim = input_data.shape
 
@@ -35,8 +35,8 @@ class RecKernel():
             K = initial_K
 
         for t in range(n_iter):
-            if self.memory_efficient:
-                current_input = input_data[t:t+input_len-n_iter, :]
+            if self.memory_efficient and bypass is None:
+                current_input = input_data[t:t+n_input, :]
             else:
                 current_input = input_data[:, t, :].reshape(n_input, input_dim)
             input_gram = current_input @ current_input.T
@@ -83,18 +83,20 @@ class RecKernel():
                     (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
         return K.to(device)
 
-
-    def forward_test(self, train_data, test_data):
-        if self.memory_efficient:
+    def forward_test(self, train_data, test_data, initial_K=None, bypass=None):
+        if self.memory_efficient and bypass is None:
             n_iter = self.n_iter
             train_len, input_dim = train_data.shape
-            n_train = train_len - n_iter
+            n_train = train_len - n_iter + 1
             test_len = test_data.shape[0]
-            n_test = test_len - n_iter
+            n_test = test_len - n_iter + 1
 
             diag_res_train = torch.ones(n_train).to(device)
             diag_res_test = torch.ones(n_test).to(device)
-            K = torch.ones(n_test, n_train).to(device)
+            if initial_K is None:
+                K = torch.ones((n_test, n_train)).to(device)
+            else:
+                K = initial_K
 
             for t in range(n_iter):
                 current_train = train_data[t:t+n_train, :]
@@ -120,15 +122,17 @@ class RecKernel():
                 elif self.function == 'linear':
                     K = self.res_scale**2 * K + self.input_scale**2 * input_gram
 
-            return K.to(device)
-
+            if self.function == 'arcsin':
+                return K.to(device), diag_res_train, diag_res_test
+            else:
+                return K.to(device)
         else:
             input_data = torch.cat((train_data, test_data), dim=0)
             n_input, n_iter, input_dim = input_data.shape
             n_train = train_data.shape[0]
             n_test = test_data.shape[0]
 
-            K = self.forward(input_data)
+            K = self.forward(input_data, bypass=True)
             return K[-n_test:, :n_train].to(device)
 
     def train(self, K, y, method='cholesky', alpha=1e-3):
@@ -142,3 +146,73 @@ class RecKernel():
             clf = Ridge(fit_intercept=False, alpha=alpha)
             clf.fit(K.cpu().numpy(), y.cpu().numpy())
             return torch.from_numpy(clf.coef_.T).to(device)
+
+    def rec_pred(self, K, train_data, test_data, output_w, n_rec, diag_res_train, diag_res_test):
+        # Retrieve parameters
+        input_len, input_dim = train_data.shape
+        n_points = K.shape[0]
+        out_len = output_w.shape[1]
+        single_pred_length = out_len // input_dim
+
+        # Create matrices for the first values of K, computed using forward_test
+        small_train_data = train_data[:self.n_iter+single_pred_length, :]
+        concat_train = torch.zeros(single_pred_length, self.n_iter, input_dim).to(device)
+        for i in range(single_pred_length):
+            concat_train[i, :, :] = small_train_data[i:i+self.n_iter, :]
+        concat_test = torch.zeros(n_points, self.n_iter, input_dim).to(device)
+        for i in range(n_points):
+            concat_test[i, :, :] = test_data[i:i+self.n_iter, :]
+
+        # Prediction
+        total_pred = torch.zeros(n_points, out_len*(n_rec+1))
+        pred_data = (K @ output_w)
+        total_pred[:, :out_len] = pred_data
+        pred_data = pred_data.reshape(n_points, single_pred_length, input_dim)
+        t0 = self.n_iter
+
+        for i_rec in range(n_rec):
+            # We first compute the last elements using an online method
+            shrinking_K = K
+            shrinking_diag_res_train = diag_res_train
+            for t in range(single_pred_length):
+                current_train = train_data[t0+t:, :]  # we remove one element at each iteration
+                current_test = pred_data[:, t, :].reshape(n_points, input_dim)
+                input_gram = current_test @ current_train.T
+
+                if self.function == 'arcsin':
+                    # print(shrinking_diag_res_train.shape)
+                    # print(current_train.shape)
+                    renorm_factor = 1 / torch.sqrt(
+                        (1 + 2*self.res_scale**2*diag_res_test+2*self.input_scale**2*torch.sum((current_test)**2, dim=1)).reshape(-1, 1) @
+                        (1 + 2*self.res_scale**2*shrinking_diag_res_train[:-1]+2*self.input_scale**2*torch.sum(current_train**2, dim=1)).reshape(1, -1)
+                        )
+                    test = 2 * self.res_scale**2 * shrinking_K[:, :-1] + 2 * self.input_scale**2 * input_gram
+                    shrinking_K = 2 / np.pi * torch.asin(
+                        (2 * self.res_scale**2 * shrinking_K[:, :-1] + 2 * self.input_scale**2 * input_gram) * renorm_factor)  # we remove the last element of K
+
+                    shrinking_diag_res_train = 2 / np.pi * torch.asin(
+                        (2 * self.res_scale**2 * shrinking_diag_res_train[:-1] + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1)) /
+                        (1 + 2 * self.res_scale**2 * shrinking_diag_res_train[:-1] + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1))
+                        )
+                    # shrinking_diag_res_train = shrinking_diag_res_train[:-1]
+                    diag_res_test = 2 / np.pi * torch.asin(
+                        (2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1)) /
+                        (1 + 2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1))
+                        )
+                elif self.function == 'linear':
+                    shrinking_K = self.res_scale**2 * shrinking_K[:, :-1] + self.input_scale**2 * input_gram
+
+            K[:, single_pred_length:] = shrinking_K
+
+            # We complete the Gram matrix by using the forward_pred function
+            concat_test = torch.cat((concat_test, pred_data), dim=1)
+            concat_test = concat_test[:, single_pred_length:, :]
+            K[:, :single_pred_length] = self.forward_test(concat_train, concat_test, bypass=True)
+
+            pred_data = (K @ output_w)
+            total_pred[:, (i_rec+1)*out_len:(i_rec+2)*out_len] = pred_data
+            pred_data = pred_data.reshape(n_points, single_pred_length, input_dim)
+
+        return total_pred
+
+
