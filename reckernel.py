@@ -216,7 +216,7 @@ class RecKernel():
         return total_pred
 
     def test_stability(self, input_data, initial_K1=None, initial_K2=None):
-        if self.memory_efficient and bypass is None:
+        if self.memory_efficient:
             input_len, input_dim = input_data.shape
             n_iter = self.n_iter
             n_input = input_len - n_iter + 1
@@ -228,13 +228,13 @@ class RecKernel():
         else:
             K1 = initial_K1
         if initial_K2 is None:
-            K2 = torch.zeros((n_input, n_input)).to(device)
+            K2 = - torch.zeros((n_input, n_input)).to(device)
         else:
             K2 = initial_K2
 
         res = torch.zeros(n_iter).to(device)
         for t in range(n_iter):
-            if self.memory_efficient and bypass is None:
+            if self.memory_efficient:
                 current_input = input_data[t:t+n_input, :]
             else:
                 current_input = input_data[:, t, :].reshape(n_input, input_dim)
