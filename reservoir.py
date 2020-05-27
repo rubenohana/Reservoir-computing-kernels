@@ -46,8 +46,6 @@ class ESN(torch.nn.Module):
             self.f = lambda x: 1 * (x > 0)
         if f == 'sign':
             self.f = torch.sign
-        if f == 'linear':
-            self.f = lambda x: x
                 
         torch.manual_seed(self.seed)
         if self.random_projection == 'structured':
@@ -84,7 +82,7 @@ class ESN(torch.nn.Module):
                         (1 - self.leak_rate) * x[i-1, :] + \
                         self.leak_rate * self.f( 
                             self.input_scale * self.W_in @ input_data[i, :] + 
-                            self.res_scale * self.W_res @ x[i-1, :]
+                            self.res_scale * self.W_res @ x[i-1, :] + self.bias
                             ) / np.sqrt(self.res_size)
                 elif self.random_projection == 'structured':
                     u = torch.cat((
@@ -100,21 +98,21 @@ class ESN(torch.nn.Module):
                     v3 = v3[:self.res_size]
                     x[i,:] = \
                         (1 - self.leak_rate) * x[i-1, :] + \
-                        self.leak_rate * self.f(v3) / np.sqrt(self.res_size)
+                        self.leak_rate * self.f(v3 + self.bias) / np.sqrt(self.res_size)
             else:
                 torch.manual_seed(self.seed + i)
                 if self.random_projection == 'gaussian':
-                    W_in_redraw = self.input_scale * torch.randn((self.res_size, self.input_size)).to(device)
+                    W_in_redraw = torch.randn((self.res_size, self.input_size)).to(device)
                     input_prod = W_in_redraw @ input_data[i, :]
                     del W_in_redraw
-                    W_res_redraw = self.res_scale * torch.randn((self.res_size, self.res_size)).to(device)
+                    W_res_redraw = torch.randn((self.res_size, self.res_size)).to(device)
                     res_prod = W_res_redraw @ x[i-1, :]
                     del W_res_redraw
                     x[i,:] = \
                         (1 - self.leak_rate) * x[i-1, :] + \
                         self.leak_rate * self.f( 
                             self.input_scale * input_prod + 
-                            self.res_scale * res_prod
+                            self.res_scale * res_prod + self.bias
                             ) / np.sqrt(self.res_size)
                 elif self.random_projection == 'structured':
                     self.diag1 = 2 * torch.randint(0, 2, (self.had_dim, )).to(device) - 1
@@ -132,7 +130,7 @@ class ESN(torch.nn.Module):
                     v3 = v3[:self.res_size]
                     x[i,:] = \
                         (1 - self.leak_rate) * x[i-1, :] + \
-                        self.leak_rate * self.f(v3) / np.sqrt(self.res_size)
+                        self.leak_rate * self.f(v3 + self.bias) / np.sqrt(self.res_size)
 
         return x
 
@@ -151,13 +149,16 @@ class ESN(torch.nn.Module):
             clf.fit(X.cpu().numpy(), y.cpu().numpy())
             return torch.from_numpy(clf.coef_.T).to(device)
 
-    def rec_pred(self, X, output_w, n_rec, input_dim):
+    def rec_pred(self, X, output_w, n_rec, input_dim, concat=None, renorm_factor=None):
         Xd = X  # input_len, n_res
         input_len = X.shape[0]
         out_len = output_w.shape[1]
 
         total_pred = torch.zeros(input_len, out_len*(n_rec+1))
-        pred_data = Xd @ output_w
+        if concat is None:
+            pred_data = Xd @ output_w
+        else:
+            pred_data = torch.cat((Xd, concat), dim=1) @ output_w
         total_pred[:, :out_len] = pred_data
         single_pred_length = out_len // input_dim
         for i_rec in range(n_rec):
@@ -167,21 +168,25 @@ class ESN(torch.nn.Module):
                     Xd = (1 - self.leak_rate) * Xd + \
                         self.leak_rate * self.f(
                             self.res_scale * Xd @ self.W_res.T +
-                            self.input_scale * pred_input @ self.W_in.T
+                            self.input_scale * pred_input @ self.W_in.T + self.bias
                             ) / np.sqrt(self.res_size)
                 elif self.random_projection == 'structured':
                     U = torch.cat((
                         self.input_scale * pred_input, 
                         self.res_scale * Xd, 
-                        torch.zeros(input_len, self.had_dim - self.res_size - self.input_size)
+                        torch.zeros(input_len, self.had_dim - self.res_size - self.input_size).to(device)
                         ), dim=1)
                     V1 = hadamard_transform(U * self.diag1)
                     V2 = hadamard_transform(V1 * self.diag2)
                     V3 = hadamard_transform(V2 * self.diag3)
                     V3 /= self.had_dim
                     V3 = V3[:, :self.res_size]
-                    Xd = (1 - self.leak_rate) * Xd + self.leak_rate * self.f(V3) / np.sqrt(self.res_size)
-            pred_data = Xd @ output_w
+                    Xd = (1 - self.leak_rate) * Xd + self.leak_rate * self.f(V3 + self.bias) / np.sqrt(self.res_size)
+            if concat is None:
+                pred_data = Xd @ output_w
+            else:
+                concat = pred_data[:, -input_dim:] * renorm_factor
+                pred_data = torch.cat((Xd, concat), dim=1) @ output_w
             total_pred[:, (i_rec+1)*out_len:(i_rec+2)*out_len] = pred_data
         return total_pred
 

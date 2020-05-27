@@ -12,11 +12,12 @@ class RecKernel():
 
     def __init__(self, function='arcsin', 
                  res_scale=1, input_scale=1,
-                 memory_efficient=True, n_iter=50, leak_rate=1):
+                 memory_efficient=True, n_iter=50, leak_rate=1, bias_scale=0):
         self.function = function
         self.res_scale = res_scale
         self.input_scale = input_scale
         self.leak_rate = leak_rate
+        self.bias_scale = bias_scale
 
         self.memory_efficient = memory_efficient
         self.n_iter = n_iter
@@ -42,16 +43,16 @@ class RecKernel():
             input_gram = current_input @ current_input.T
 
             if self.function == 'linear':
-                K = self.res_scale**2 * K + self.input_scale**2 * input_gram
+                K = self.res_scale**2 * K + self.input_scale**2 * input_gram + self.bias_scale**2
             elif self.function == 'arcsin':
                 diag_res = torch.diag(K)
                 diag_in = torch.diag(input_gram)
                 renorm_diag = 1 / (
-                    1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in)
+                    1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in + 2 * self.bias_scale**2)
                 renorm_factor = torch.sqrt(
                     renorm_diag.reshape(n_input, 1) @ renorm_diag.reshape(1, n_input))
                 K = 2 / np.pi * torch.asin(
-                    (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
+                    (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram + 2 * self.bias_scale**2) * renorm_factor)
             elif self.function == 'rbf':
                 diag_res = torch.diag(K) #x**2
                 diag_in = torch.diag(input_gram) #i**2
@@ -63,24 +64,24 @@ class RecKernel():
             elif self.function == 'acos heaviside':
                 diag_res = torch.diag(K)
                 diag_in = torch.diag(input_gram)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + 2 * self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K = 0.5 - torch.acos(((self.res_scale**2)*K + (self.input_scale**2) *input_gram) * renorm_factor) /(2*np.pi) 
+                K = 0.5 - torch.acos(((self.res_scale**2)*K + (self.input_scale**2) *input_gram + 2 * self.bias_scale**2) * renorm_factor) /(2*np.pi) 
             elif self.function == 'asin sign':
                 diag_res = torch.diag(K)
                 diag_in = torch.diag(input_gram)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + 2 * self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K = (2/np.pi)*torch.asin(((self.res_scale**2)*K + (self.input_scale**2) *input_gram) * renorm_factor)
-            elif self.function == 'arcsin leak':
-                diag_res = torch.diag(K)
-                diag_in = torch.diag(input_gram)
-                renorm_diag = 1 / (
-                    1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in)
-                renorm_factor = torch.sqrt(
-                    renorm_diag.reshape(n_input, 1) @ renorm_diag.reshape(1, n_input))
-                K = (1 - self.leak_rate)**2 * K + self.leak_rate**2 *  2 / np.pi * torch.asin(
-                    (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
+                K = (2/np.pi)*torch.asin(((self.res_scale**2)*K + (self.input_scale**2) *input_gram + 2 * self.bias_scale**2) * renorm_factor)
+            # elif self.function == 'arcsin leak':
+            #     diag_res = torch.diag(K)
+            #     diag_in = torch.diag(input_gram)
+            #     renorm_diag = 1 / (
+            #         1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in)
+            #     renorm_factor = torch.sqrt(
+            #         renorm_diag.reshape(n_input, 1) @ renorm_diag.reshape(1, n_input))
+            #     K = (1 - self.leak_rate)**2 * K + self.leak_rate**2 *  2 / np.pi * torch.asin(
+            #         (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
         return K.to(device)
 
     def forward_test(self, train_data, test_data, initial_K=None, bypass=None):
@@ -105,22 +106,22 @@ class RecKernel():
 
                 if self.function == 'arcsin':
                     renorm_factor = 1 / torch.sqrt(
-                        (1 + 2*self.res_scale**2*diag_res_test+2*self.input_scale**2*torch.sum((current_test)**2, dim=1)).reshape(n_test, 1) @
-                        (1 + 2*self.res_scale**2*diag_res_train+2*self.input_scale**2*torch.sum(current_train**2, dim=1)).reshape(1, n_train)
+                        (1 + 2*self.res_scale**2*diag_res_test+2*self.input_scale**2*torch.sum((current_test)**2, dim=1) + 2 * self.bias_scale**2).reshape(n_test, 1) @
+                        (1 + 2*self.res_scale**2*diag_res_train+2*self.input_scale**2*torch.sum(current_train**2, dim=1) + 2 * self.bias_scale**2).reshape(1, n_train)
                         )
                     K = 2 / np.pi * torch.asin(
-                        (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram) * renorm_factor)
+                        (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram + 2 * self.bias_scale**2) * renorm_factor)
 
                     diag_res_train = 2 / np.pi * torch.asin(
-                        (2 * self.res_scale**2 * diag_res_train + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1)) /
-                        (1 + 2 * self.res_scale**2 * diag_res_train + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1))
+                        (2 * self.res_scale**2 * diag_res_train + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1) + 2 * self.bias_scale**2) /
+                        (1 + 2 * self.res_scale**2 * diag_res_train + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1) + 2 * self.bias_scale**2)
                         )
                     diag_res_test = 2 / np.pi * torch.asin(
-                        (2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1)) /
-                        (1 + 2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1))
+                        (2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1) + 2 * self.bias_scale**2) /
+                        (1 + 2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1) + 2 * self.bias_scale**2)
                         )
                 elif self.function == 'linear':
-                    K = self.res_scale**2 * K + self.input_scale**2 * input_gram
+                    K = self.res_scale**2 * K + self.input_scale**2 * input_gram + self.bias_scale**2
 
             if self.function == 'arcsin':
                 return K.to(device), diag_res_train, diag_res_test
@@ -147,7 +148,51 @@ class RecKernel():
             clf.fit(K.cpu().numpy(), y.cpu().numpy())
             return torch.from_numpy(clf.coef_.T).to(device)
 
-    def rec_pred(self, K, train_data, test_data, output_w, n_rec, diag_res_train, diag_res_test):
+    def rec_pred(self, K, train_data, test_data, output_w, n_rec, diag_res_train, diag_res_test, concat):
+        # Retrieve parameters
+        input_len, input_dim = train_data.shape
+        n_points = K.shape[0]
+        out_len = output_w.shape[1]
+        single_pred_length = out_len // input_dim
+
+        concat_train = torch.zeros(input_len-self.n_iter+1, self.n_iter, input_dim).to(device)
+        for i in range(input_len-self.n_iter+1):
+            concat_train[i, :, :] = train_data[i:i+self.n_iter, :]
+        concat_test = torch.zeros(n_points, self.n_iter, input_dim).to(device)
+        for i in range(n_points):
+            concat_test[i, :, :] = test_data[i:i+self.n_iter, :]
+
+        # Prediction
+        total_pred = torch.zeros(n_points, out_len*(n_rec+1))
+        if concat != 0:
+            final_train_data = train_data[self.n_iter-1:, :]
+            final_test_data = test_data[self.n_iter-1:, :]
+            gram_mat = final_test_data @ final_train_data.T
+
+            pred_data = (K + concat * gram_mat) @ output_w
+        else:
+            pred_data = (K @ output_w)
+        total_pred[:, :out_len] = pred_data
+        pred_data = pred_data.reshape(n_points, single_pred_length, input_dim)
+        for i_rec in range(n_rec):
+            concat_test = torch.cat((concat_test, pred_data), dim=1)
+            concat_test = concat_test[:, single_pred_length:, :]
+            K = self.forward_test(concat_train, concat_test, bypass=True)
+
+            if concat != 0:
+                final_train_data = train_data[self.n_iter-1:, :]
+                final_test_data = pred_data[:, single_pred_length-1, :].reshape(n_points, input_dim)
+                gram_mat = final_test_data @ final_train_data.T
+
+                pred_data = (K + concat * gram_mat) @ output_w
+            else:
+                pred_data = (K @ output_w)
+            total_pred[:, (i_rec+1)*out_len:(i_rec+2)*out_len] = pred_data
+            pred_data = pred_data.reshape(n_points, single_pred_length, input_dim)
+
+        return total_pred
+
+    def rec_pred_fast(self, K, train_data, test_data, output_w, n_rec, diag_res_train, diag_res_test, concat):
         # Retrieve parameters
         input_len, input_dim = train_data.shape
         n_points = K.shape[0]
@@ -165,17 +210,22 @@ class RecKernel():
 
         # Prediction
         total_pred = torch.zeros(n_points, out_len*(n_rec+1))
-        pred_data = (K @ output_w)
+        if concat != 0:
+            final_train_data = train_data[self.n_iter-1:, :]
+            final_test_data = test_data[self.n_iter-1:, :]
+            gram_mat = final_test_data @ final_train_data.T
+
+            pred_data = (K + concat * gram_mat) @ output_w
+        else:
+            pred_data = (K @ output_w)
         total_pred[:, :out_len] = pred_data
         pred_data = pred_data.reshape(n_points, single_pred_length, input_dim)
-        t0 = self.n_iter
-
         for i_rec in range(n_rec):
             # We first compute the last elements using an online method
             shrinking_K = K
             shrinking_diag_res_train = diag_res_train
             for t in range(single_pred_length):
-                current_train = train_data[t0+t:, :]  # we remove one element at each iteration
+                current_train = train_data[self.n_iter+t:, :]  # we remove one element at each iteration
                 current_test = pred_data[:, t, :].reshape(n_points, input_dim)
                 input_gram = current_test @ current_train.T
 
@@ -183,25 +233,23 @@ class RecKernel():
                     # print(shrinking_diag_res_train.shape)
                     # print(current_train.shape)
                     renorm_factor = 1 / torch.sqrt(
-                        (1 + 2*self.res_scale**2*diag_res_test+2*self.input_scale**2*torch.sum((current_test)**2, dim=1)).reshape(-1, 1) @
-                        (1 + 2*self.res_scale**2*shrinking_diag_res_train[:-1]+2*self.input_scale**2*torch.sum(current_train**2, dim=1)).reshape(1, -1)
+                        (1 + 2*self.res_scale**2*diag_res_test+2*self.input_scale**2*torch.sum((current_test)**2, dim=1) + 2 * self.bias_scale**2).reshape(-1, 1) @
+                        (1 + 2*self.res_scale**2*shrinking_diag_res_train[:-1]+2*self.input_scale**2*torch.sum(current_train**2, dim=1) + 2 * self.bias_scale**2).reshape(1, -1)
                         )
-                    test = 2 * self.res_scale**2 * shrinking_K[:, :-1] + 2 * self.input_scale**2 * input_gram
                     shrinking_K = 2 / np.pi * torch.asin(
-                        (2 * self.res_scale**2 * shrinking_K[:, :-1] + 2 * self.input_scale**2 * input_gram) * renorm_factor)  # we remove the last element of K
+                        (2 * self.res_scale**2 * shrinking_K[:, :-1] + 2 * self.input_scale**2 * input_gram + 2 * self.bias_scale**2) * renorm_factor)  # we remove the last element of K
 
                     shrinking_diag_res_train = 2 / np.pi * torch.asin(
-                        (2 * self.res_scale**2 * shrinking_diag_res_train[:-1] + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1)) /
-                        (1 + 2 * self.res_scale**2 * shrinking_diag_res_train[:-1] + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1))
+                        (2 * self.res_scale**2 * shrinking_diag_res_train[:-1] + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1) + 2 * self.bias_scale**2) /
+                        (1 + 2 * self.res_scale**2 * shrinking_diag_res_train[:-1] + 2 * self.input_scale**2 * torch.sum(current_train**2, dim=1) + 2 * self.bias_scale**2)
                         )
                     # shrinking_diag_res_train = shrinking_diag_res_train[:-1]
                     diag_res_test = 2 / np.pi * torch.asin(
-                        (2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1)) /
-                        (1 + 2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1))
+                        (2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1) + 2 * self.bias_scale**2) /
+                        (1 + 2 * self.res_scale**2 * diag_res_test + 2 * self.input_scale**2 * torch.sum((current_test)**2, dim=1) + 2 * self.bias_scale**2)
                         )
                 elif self.function == 'linear':
-                    shrinking_K = self.res_scale**2 * shrinking_K[:, :-1] + self.input_scale**2 * input_gram
-
+                    shrinking_K = self.res_scale**2 * shrinking_K[:, :-1] + self.input_scale**2 * input_gram + self.bias_scale**2
             K[:, single_pred_length:] = shrinking_K
 
             # We complete the Gram matrix by using the forward_pred function
@@ -209,14 +257,21 @@ class RecKernel():
             concat_test = concat_test[:, single_pred_length:, :]
             K[:, :single_pred_length] = self.forward_test(concat_train, concat_test, bypass=True)
 
-            pred_data = (K @ output_w)
+            if concat != 0:
+                final_train_data = train_data[self.n_iter-1:, :]
+                final_test_data = pred_data[:, single_pred_length-1, :].reshape(n_points, input_dim)
+                gram_mat = final_test_data @ final_train_data.T
+
+                pred_data = (K + concat * gram_mat) @ output_w
+            else:
+                pred_data = (K @ output_w)
             total_pred[:, (i_rec+1)*out_len:(i_rec+2)*out_len] = pred_data
             pred_data = pred_data.reshape(n_points, single_pred_length, input_dim)
 
         return total_pred
 
     def test_stability(self, input_data, initial_K1=None, initial_K2=None):
-        if self.memory_efficient:
+        if self.memory_efficient and bypass is None:
             input_len, input_dim = input_data.shape
             n_iter = self.n_iter
             n_input = input_len - n_iter + 1
@@ -228,38 +283,38 @@ class RecKernel():
         else:
             K1 = initial_K1
         if initial_K2 is None:
-            K2 = - torch.zeros((n_input, n_input)).to(device)
+            K2 = torch.zeros((n_input, n_input)).to(device)
         else:
             K2 = initial_K2
 
         res = torch.zeros(n_iter).to(device)
         for t in range(n_iter):
-            if self.memory_efficient:
+            if self.memory_efficient and bypass is None:
                 current_input = input_data[t:t+n_input, :]
             else:
                 current_input = input_data[:, t, :].reshape(n_input, input_dim)
             input_gram = current_input @ current_input.T
 
             if self.function == 'linear':
-                K1 = self.res_scale**2 * K1 + self.input_scale**2 * input_gram
-                K0 = self.res_scale**2 * K0 + self.input_scale**2 * input_gram
+                K1 = self.res_scale**2 * K1 + self.input_scale**2 * input_gram + self.bias_scale**2
+                K0 = self.res_scale**2 * K0 + self.input_scale**2 * input_gram + self.bias_scale**2
             elif self.function == 'arcsin':
                 diag_in = torch.diag(input_gram)
 
                 diag_res = torch.diag(K1)
                 renorm_diag = 1 / (
-                    1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in)
+                    1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in + self.bias_scale**2)
                 renorm_factor = torch.sqrt(
                     renorm_diag.reshape(n_input, 1) @ renorm_diag.reshape(1, n_input))
                 K1 = 2 / np.pi * torch.asin(
-                    (2 * self.res_scale**2 * K1 + 2 * self.input_scale**2 * input_gram) * renorm_factor)
+                    (2 * self.res_scale**2 * K1 + 2 * self.input_scale**2 * input_gram + self.bias_scale**2) * renorm_factor)
                 diag_res = torch.diag(K2)
                 renorm_diag = 1 / (
-                    1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in)
+                    1 + 2 * self.res_scale**2 * diag_res + 2 * self.input_scale**2 * diag_in + self.bias_scale**2)
                 renorm_factor = torch.sqrt(
                     renorm_diag.reshape(n_input, 1) @ renorm_diag.reshape(1, n_input))
                 K2 = 2 / np.pi * torch.asin(
-                    (2 * self.res_scale**2 * K2 + 2 * self.input_scale**2 * input_gram) * renorm_factor)
+                    (2 * self.res_scale**2 * K2 + 2 * self.input_scale**2 * input_gram + self.bias_scale**2) * renorm_factor)
             elif self.function == 'rbf':
                 diag_in = torch.diag(input_gram)
 
@@ -277,23 +332,24 @@ class RecKernel():
                 diag_in = torch.diag(input_gram)
 
                 diag_res = torch.diag(K1)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K1 = 0.5 - torch.acos(((self.res_scale**2)*K1 + (self.input_scale**2) *input_gram) * renorm_factor) /(2*np.pi)
+                K1 = 0.5 - torch.acos(((self.res_scale**2)*K1 + (self.input_scale**2) *input_gram + self.bias_scale**2) * renorm_factor) /(2*np.pi)
                 diag_res = torch.diag(K2)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K2 = 0.5 - torch.acos(((self.res_scale**2)*K2 + (self.input_scale**2) *input_gram) * renorm_factor) /(2*np.pi)
+                K2 = 0.5 - torch.acos(((self.res_scale**2)*K2 + (self.input_scale**2) *input_gram + self.bias_scale**2) * renorm_factor) /(2*np.pi)
             elif self.function == 'asin sign':
                 diag_in = torch.diag(input_gram)
 
                 diag_res = torch.diag(K1)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K1 = (2/np.pi)*torch.asin(((self.res_scale**2)*K1 + (self.input_scale**2) *input_gram) * renorm_factor)
+                K1 = (2/np.pi)*torch.asin(((self.res_scale**2)*K1 + (self.input_scale**2) *input_gram + self.bias_scale**2) * renorm_factor)
                 diag_res = torch.diag(K2)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K2 = (2/np.pi)*torch.asin(((self.res_scale**2)*K2 + (self.input_scale**2) *input_gram) * renorm_factor)
+                K2 = (2/np.pi)*torch.asin(((self.res_scale**2)*K2 + (self.input_scale**2) *input_gram + self.bias_scale**2) * renorm_factor)
             res[t] = torch.mean(torch.abs(K2-K1)**2)
         return res
+
