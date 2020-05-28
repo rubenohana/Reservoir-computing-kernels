@@ -53,6 +53,8 @@ class RecKernel():
                     renorm_diag.reshape(n_input, 1) @ renorm_diag.reshape(1, n_input))
                 K = 2 / np.pi * torch.asin(
                     (2 * self.res_scale**2 * K + 2 * self.input_scale**2 * input_gram + 2 * self.bias_scale**2) * renorm_factor)
+                del diag_res, diag_in, renorm_diag, renorm_factor
+                
             elif self.function == 'rbf':
                 diag_res = torch.diag(K) #x**2
                 diag_in = torch.diag(input_gram) #i**2
@@ -61,18 +63,36 @@ class RecKernel():
                     *torch.exp(-0.5*(diag_res.reshape(1,n_input))*self.res_scale**2)\
                         *torch.exp(K*self.res_scale**2)\
                             * torch.exp(- 0.5*torch.cdist(current_input,current_input)**2 *self.input_scale**2)
+                del diag_res, diag_in
             elif self.function == 'acos heaviside':
                 diag_res = torch.diag(K)
                 diag_in = torch.diag(input_gram)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + 2 * self.bias_scale**2)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K = 0.5 - torch.acos(((self.res_scale**2)*K + (self.input_scale**2) *input_gram + 2 * self.bias_scale**2) * renorm_factor) /(2*np.pi) 
+                
+                K = 0.5 - torch.acos(((self.res_scale**2)*K + (self.input_scale**2) *input_gram + self.bias_scale**2) * renorm_factor) /(2*np.pi) 
+                del diag_res, diag_in, renorm_diag, renorm_factor
+            elif self.function == 'acos relu':
+                diag_res = torch.diag(K)
+                diag_in = torch.diag(input_gram)
+                
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + self.bias_scale**2)
+                renorm_diag_inv = ((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + self.bias_scale**2)
+                renorm_factor_inv = torch.sqrt(torch.matmul(renorm_diag_inv.reshape(n_input, 1), renorm_diag_inv.reshape(1, n_input)))
+                renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
+                correl = (self.res_scale**2)*K + (self.input_scale**2) *input_gram + self.bias_scale**2
+                correl_norm = correl*renorm_factor
+                
+                K = (1/20*np.pi) * renorm_factor_inv *(correl_norm*torch.acos(-correl_norm) + torch.sqrt(1-correl_norm**2))
+                
+                del diag_res, diag_in, renorm_diag, renorm_factor
             elif self.function == 'asin sign':
                 diag_res = torch.diag(K)
                 diag_in = torch.diag(input_gram)
-                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in + 2 * self.bias_scale**2)
+                renorm_diag = 1 /((self.res_scale**2)*diag_res + (self.input_scale)**2 * diag_in +  self.bias_scale**2)
                 renorm_factor = torch.sqrt(torch.matmul(renorm_diag.reshape(n_input, 1), renorm_diag.reshape(1, n_input)))
-                K = (2/np.pi)*torch.asin(((self.res_scale**2)*K + (self.input_scale**2) *input_gram + 2 * self.bias_scale**2) * renorm_factor)
+                K = (2/np.pi)*torch.asin(((self.res_scale**2)*K + (self.input_scale**2) *input_gram +  self.bias_scale**2) * renorm_factor)
+                del diag_res, diag_in, renorm_diag, renorm_factor
             # elif self.function == 'arcsin leak':
             #     diag_res = torch.diag(K)
             #     diag_in = torch.diag(input_gram)
