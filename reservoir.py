@@ -46,6 +46,8 @@ class ESN(torch.nn.Module):
             self.f = lambda x: 1 * (x > 0)
         if f == 'sign':
             self.f = torch.sign
+        if f == 'relu':
+            self.f = torch.relu
                 
         torch.manual_seed(self.seed)
         if self.random_projection == 'structured':
