@@ -1,4 +1,3 @@
-# Reservoir-computing-kernels
-
-For the neurips 2020 paper. 
-Notebook of results for the quality of approximation of the reservoir and the kernel methods
+# Reservoir-computing-recurrent-kernels
+Github of associated to the paper "Reservoir Computing Meet Recurrent Kernels and Structured Transforms" submited to Neurips 2020. 
+The notebooks in this repository allow to reproduce the results presented in the paper.
